@@ -27,7 +27,7 @@ services:
       - 'S3_AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}'
       - 'LOG_LEVEL=${LOG_LEVEL:-info}'
       - 'WEB_DOMAIN=https://onyx.biralo.studio'
-      - 'API_PREFIX=/api'
+      - API_PREFIX=/api
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     logging:
@@ -50,14 +50,14 @@ services:
     labels:
       traefik.enable: 'true'
       traefik.docker.network: coolify
-      traefik.http.routers.onyx-api-https.rule: Host(`onyx.biralo.studio`) && PathPrefix(`/api`)
+      traefik.http.routers.onyx-api-https.rule: 'Host(`onyx.biralo.studio`) && PathPrefix(`/api`)'
       traefik.http.routers.onyx-api-https.entrypoints: https
       traefik.http.routers.onyx-api-https.tls: 'true'
       traefik.http.routers.onyx-api-https.tls.certresolver: letsencrypt
       traefik.http.routers.onyx-api-https.service: onyx-api
       traefik.http.routers.onyx-api-https.priority: '100'
       traefik.http.services.onyx-api.loadbalancer.server.port: '8080'
-      traefik.http.routers.onyx-api-http.rule: Host(`onyx.biralo.studio`) && PathPrefix(`/api`)
+      traefik.http.routers.onyx-api-http.rule: 'Host(`onyx.biralo.studio`) && PathPrefix(`/api`)'
       traefik.http.routers.onyx-api-http.entrypoints: http
       traefik.http.routers.onyx-api-http.middlewares: onyx-redirect-https
     networks:
@@ -109,7 +109,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     environment:
-      - 'INTERNAL_URL=http://api_server:8080'
+      - 'INTERNAL_URL=http://api_server:8080/api'
       - 'WEB_DOMAIN=https://onyx.biralo.studio'
       - HOSTNAME=0.0.0.0
     expose:
