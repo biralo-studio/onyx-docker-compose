@@ -1,0 +1,245 @@
+services:
+  api_server:
+    image: 'onyxdotapp/onyx-backend:${IMAGE_TAG:-latest}'
+    command: "/bin/sh -c \"alembic upgrade head && echo \\\"Starting Onyx Api Server\\\" && uvicorn onyx.main:app --host 0.0.0.0 --port 8080\"\n"
+    depends_on:
+      relational_db:
+        condition: service_healthy
+      index:
+        condition: service_healthy
+      cache:
+        condition: service_started
+      inference_model_server:
+        condition: service_started
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      - 'AUTH_TYPE=${AUTH_TYPE:-basic}'
+      - POSTGRES_HOST=relational_db
+      - 'POSTGRES_USER=${POSTGRES_USER:-postgres}'
+      - 'POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}'
+      - VESPA_HOST=index
+      - REDIS_HOST=cache
+      - MODEL_SERVER_HOST=inference_model_server
+      - 'S3_ENDPOINT_URL=http://minio:9000'
+      - 'S3_AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER:-minioadmin}'
+      - 'S3_AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}'
+      - 'LOG_LEVEL=${LOG_LEVEL:-info}'
+      - 'WEB_DOMAIN=https://onyx.biralo.studio'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: '6'
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - '-c'
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 90s
+    volumes:
+      - 'api_server_logs:/var/log/onyx'
+    networks:
+      - onyx-internal
+  background:
+    image: 'onyxdotapp/onyx-backend:${IMAGE_TAG:-latest}'
+    command: /app/scripts/supervisord_entrypoint.sh
+    depends_on:
+      relational_db:
+        condition: service_healthy
+      index:
+        condition: service_healthy
+      cache:
+        condition: service_started
+      inference_model_server:
+        condition: service_started
+      indexing_model_server:
+        condition: service_started
+    restart: unless-stopped
+    environment:
+      - 'USE_LIGHTWEIGHT_BACKGROUND_WORKER=${USE_LIGHTWEIGHT_BACKGROUND_WORKER:-true}'
+      - POSTGRES_HOST=relational_db
+      - 'POSTGRES_USER=${POSTGRES_USER:-postgres}'
+      - 'POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}'
+      - VESPA_HOST=index
+      - REDIS_HOST=cache
+      - MODEL_SERVER_HOST=inference_model_server
+      - INDEXING_MODEL_SERVER_HOST=indexing_model_server
+      - 'S3_ENDPOINT_URL=http://minio:9000'
+      - 'S3_AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER:-minioadmin}'
+      - 'S3_AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}'
+      - 'LOG_LEVEL=${LOG_LEVEL:-info}'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      - 'background_logs:/var/log/onyx'
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: '6'
+    networks:
+      - onyx-internal
+  web_server:
+    image: 'onyxdotapp/onyx-web-server:${IMAGE_TAG:-latest}'
+    depends_on:
+      api_server:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      - 'INTERNAL_URL=http://api_server:8080'
+      - 'WEB_DOMAIN=https://onyx.biralo.studio'
+      - HOSTNAME=0.0.0.0
+    expose:
+      - '3000'
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: coolify
+      traefik.http.routers.onyx-web-unique-http.rule: Host(`onyx.biralo.studio`)
+      traefik.http.routers.onyx-web-unique-http.entrypoints: http
+      traefik.http.routers.onyx-web-unique-http.middlewares: onyx-redirect-https
+      traefik.http.routers.onyx-web-unique-https.rule: Host(`onyx.biralo.studio`)
+      traefik.http.routers.onyx-web-unique-https.entrypoints: https
+      traefik.http.routers.onyx-web-unique-https.tls: 'true'
+      traefik.http.routers.onyx-web-unique-https.tls.certresolver: letsencrypt
+      traefik.http.routers.onyx-web-unique-https.service: onyx-web-unique
+      traefik.http.services.onyx-web-unique.loadbalancer.server.port: '3000'
+      traefik.http.middlewares.onyx-redirect-https.redirectscheme.scheme: https
+      traefik.http.middlewares.onyx-redirect-https.redirectscheme.permanent: 'true'
+    networks:
+      - onyx-internal
+      - coolify
+  inference_model_server:
+    image: 'onyxdotapp/onyx-model-server:${IMAGE_TAG:-latest}'
+    command: "/bin/sh -c \"if [ \\\"${DISABLE_MODEL_SERVER:-false}\\\" = \\\"true\\\" ]; then\n  echo 'Model server disabled'; exit 0;\nelse\n  exec uvicorn model_server.main:app --host 0.0.0.0 --port 9000;\nfi\"\n"
+    restart: unless-stopped
+    volumes:
+      - 'model_cache_huggingface:/app/.cache/huggingface/'
+      - 'inference_model_server_logs:/var/log/onyx'
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: '6'
+    networks:
+      - onyx-internal
+  indexing_model_server:
+    image: 'onyxdotapp/onyx-model-server:${IMAGE_TAG:-latest}'
+    command: "/bin/sh -c \"if [ \\\"${DISABLE_MODEL_SERVER:-false}\\\" = \\\"true\\\" ]; then\n  echo 'Model server disabled'; exit 0;\nelse\n  exec uvicorn model_server.main:app --host 0.0.0.0 --port 9000;\nfi\"\n"
+    restart: unless-stopped
+    environment:
+      - INDEXING_ONLY=True
+    volumes:
+      - 'indexing_huggingface_model_cache:/app/.cache/huggingface/'
+      - 'indexing_model_server_logs:/var/log/onyx'
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: '6'
+    networks:
+      - onyx-internal
+  relational_db:
+    image: 'postgres:15.2-alpine'
+    shm_size: 1g
+    command: "-c 'max_connections=250'"
+    restart: unless-stopped
+    environment:
+      - 'POSTGRES_USER=${POSTGRES_USER:-postgres}'
+      - 'POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-password}'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'pg_isready -U ${POSTGRES_USER:-postgres}'
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - 'db_volume:/var/lib/postgresql/data'
+    networks:
+      - onyx-internal
+  index:
+    image: 'vespaengine/vespa:8.609.39'
+    restart: unless-stopped
+    environment:
+      - VESPA_SKIP_UPGRADE_CHECK=true
+    volumes:
+      - 'vespa_volume:/opt/vespa/var'
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+        max-file: '6'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl -f http://localhost:19071/state/v1/health || exit 1'
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
+    networks:
+      - onyx-internal
+  cache:
+    image: 'redis:7.4-alpine'
+    restart: unless-stopped
+    command: 'redis-server --save "" --appendonly no'
+    tmpfs:
+      - /data
+    networks:
+      - onyx-internal
+  minio:
+    image: 'minio/minio:RELEASE.2025-07-23T15-54-02Z-cpuv1'
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: '${MINIO_ROOT_USER:-minioadmin}'
+      MINIO_ROOT_PASSWORD: '${MINIO_ROOT_PASSWORD:-minioadmin}'
+      MINIO_DEFAULT_BUCKETS: '${S3_FILE_STORE_BUCKET_NAME:-onyx-file-store-bucket}'
+    volumes:
+      - 'minio_data:/data'
+    command: 'server /data --console-address ":9001"'
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - '-f'
+        - 'http://localhost:9000/minio/health/live'
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - onyx-internal
+  code-interpreter:
+    image: 'onyxdotapp/code-interpreter:${CODE_INTERPRETER_IMAGE_TAG:-latest}'
+    entrypoint:
+      - /bin/bash
+      - '-c'
+    command: "\" if [ \\\"$${CODE_INTERPRETER_BETA_ENABLED:-false}\\\" = \\\"true\\\" ]; then\n  exec bash ./entrypoint.sh code-interpreter-api;\nelse\n  echo 'Code interpreter disabled';\n  exec tail -f /dev/null;\nfi \"\n"
+    restart: unless-stopped
+    user: root
+    volumes:
+      - '/var/run/docker.sock:/var/run/docker.sock'
+    networks:
+      - onyx-internal
+networks:
+  onyx-internal:
+    driver: bridge
+  coolify:
+    external: true
+volumes:
+  db_volume: null
+  vespa_volume: null
+  minio_data: null
+  model_cache_huggingface: null
+  indexing_huggingface_model_cache: null
+  api_server_logs: null
+  background_logs: null
+  inference_model_server_logs: null
+  indexing_model_server_logs: null
