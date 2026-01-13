@@ -27,6 +27,7 @@ services:
       - 'S3_AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}'
       - 'LOG_LEVEL=${LOG_LEVEL:-info}'
       - 'WEB_DOMAIN=https://onyx.biralo.studio'
+      - 'API_PREFIX=/api'
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     logging:
@@ -39,15 +40,29 @@ services:
         - CMD
         - python
         - '-c'
-        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')"
       interval: 30s
       timeout: 20s
       retries: 5
       start_period: 90s
     volumes:
       - 'api_server_logs:/var/log/onyx'
+    labels:
+      traefik.enable: 'true'
+      traefik.docker.network: coolify
+      traefik.http.routers.onyx-api-https.rule: Host(`onyx.biralo.studio`) && PathPrefix(`/api`)
+      traefik.http.routers.onyx-api-https.entrypoints: https
+      traefik.http.routers.onyx-api-https.tls: 'true'
+      traefik.http.routers.onyx-api-https.tls.certresolver: letsencrypt
+      traefik.http.routers.onyx-api-https.service: onyx-api
+      traefik.http.routers.onyx-api-https.priority: '100'
+      traefik.http.services.onyx-api.loadbalancer.server.port: '8080'
+      traefik.http.routers.onyx-api-http.rule: Host(`onyx.biralo.studio`) && PathPrefix(`/api`)
+      traefik.http.routers.onyx-api-http.entrypoints: http
+      traefik.http.routers.onyx-api-http.middlewares: onyx-redirect-https
     networks:
       - onyx-internal
+      - coolify
   background:
     image: 'onyxdotapp/onyx-backend:${IMAGE_TAG:-latest}'
     command: /app/scripts/supervisord_entrypoint.sh
